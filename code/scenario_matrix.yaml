@@ -1,0 +1,143 @@
+# scenario_matrix.yaml -- machine-readable Phase-1 collection plan for the GNSS-spoofing
+# benchmark (RESEARCH_PLAN.md §12).  Human rationale + wave schedule + QA gates live in
+# COLLECTION_PLAN.md.  run_collection.py --wave <n> executes one wave.
+#
+# Design: only CLEAN drives are simulated.  Attacks are injected offline by
+# make_dataset.py -> attacks.py, so one clean session yields ~22 labelled variants.
+
+version: 2
+carla_version: "0.9.15"
+world_tick_hz: 100
+server_quality: Epic          # Low crashes on this build; Medium untested
+
+# ---------------------------------------------------------------------------------------
+# defaults (overridable per row)
+# ---------------------------------------------------------------------------------------
+defaults:
+  minutes: 8
+  traffic: 35          # with TM hybrid-physics this is plenty; higher gridlocks dense maps
+  walkers: 20
+  warmup_s: 3
+
+# ---------------------------------------------------------------------------------------
+# splits -- generalisation is tested on 4 axes
+# ---------------------------------------------------------------------------------------
+towns:
+  train:       [Town03, Town05, Town10HD]     # large urban / grid urban / dense downtown
+  test_unseen: [Town02, Town04, Town06, Town07]  # small town / highway loop / highways / rural
+weather:
+  train:       [clear_noon, cloudy_noon, wet_noon, clear_sunset]
+  test_unseen: [hard_rain_noon, clear_night]
+attacks:
+  families_train:       [gradual_pulloff, jump_and_hold, random_walk, zv_freeze]
+  families_test_unseen: [replay, target_bias]
+  variants_per_family_per_session: 8
+  onset_policy: mix           # 50% adversarial (junction events) / 50% uniform-random
+  duration_s: [8, 40]
+  # per-family parameter ranges: attacks.py:PARAM_RANGES (single source of truth)
+
+gnss_conditions:               # natural degradation; canyon/tunnel double as HARD NEGATIVES
+  nominal: {}
+  canyon:  {note: "+2.5 m horizontal multipath, building-side biased"}
+  tunnel:  {note: "GNSS outage windows under tunnel segments (fallback: canyon-level noise)"}
+
+# ---------------------------------------------------------------------------------------
+# WAVES -- each is one self-contained sitting: az vm start -> run -> QA -> odometry ->
+# rsync + Kaggle push -> az vm deallocate.  ~3-4 h wall each.
+# ---------------------------------------------------------------------------------------
+waves:
+
+  0_pilot:                     # ~1 h incl. setup -- validate the whole pipeline
+    - {town: Town03,   weather: clear_noon, gnss: nominal, seed: 90, minutes: 4, keep_clouds: true}
+    - {town: Town10HD, weather: clear_noon, gnss: canyon,  seed: 91, minutes: 4, keep_clouds: true}
+
+  1a_core_train:               # backbone training data, part 1
+    - {town: Town03,   weather: clear_noon,   gnss: nominal, seed: 1}
+    - {town: Town03,   weather: clear_noon,   gnss: nominal, seed: 2}
+    - {town: Town03,   weather: clear_noon,   gnss: canyon,  seed: 3}
+    - {town: Town03,   weather: clear_noon,   gnss: tunnel,  seed: 4}
+    - {town: Town03,   weather: cloudy_noon,  gnss: nominal, seed: 5}
+    - {town: Town03,   weather: wet_noon,     gnss: nominal, seed: 6, traffic: 60}
+    - {town: Town05,   weather: clear_noon,   gnss: nominal, seed: 1}
+    - {town: Town05,   weather: clear_noon,   gnss: nominal, seed: 2}
+    - {town: Town05,   weather: clear_noon,   gnss: canyon,  seed: 3}
+    - {town: Town05,   weather: cloudy_noon,  gnss: nominal, seed: 5}
+
+  1b_core_train:               # backbone training data, part 2
+    - {town: Town05,   weather: clear_sunset, gnss: nominal, seed: 7}
+    - {town: Town10HD, weather: clear_noon,   gnss: nominal, seed: 1}
+    - {town: Town10HD, weather: clear_noon,   gnss: nominal, seed: 2}
+    - {town: Town10HD, weather: clear_noon,   gnss: canyon,  seed: 3}
+    - {town: Town10HD, weather: clear_noon,   gnss: canyon,  seed: 4}
+    - {town: Town10HD, weather: wet_noon,     gnss: nominal, seed: 6, traffic: 60}
+    - {town: Town10HD, weather: clear_sunset, gnss: canyon,  seed: 8}
+    - {town: Town03,   weather: clear_sunset, gnss: nominal, seed: 9}
+    - {town: Town05,   weather: wet_noon,     gnss: canyon,  seed: 10}
+    - {town: Town10HD, weather: cloudy_noon,  gnss: nominal, seed: 11}
+
+  2_hard_negatives:            # clean-only, natural GNSS degradation (needs event density)
+    - {town: Town03,   weather: clear_noon,  gnss: tunnel, seed: 20, minutes: 12}
+    - {town: Town03,   weather: wet_noon,    gnss: tunnel, seed: 21, minutes: 12}
+    - {town: Town03,   weather: clear_noon,  gnss: canyon, seed: 22, minutes: 12}
+    - {town: Town10HD, weather: clear_noon,  gnss: canyon, seed: 23, minutes: 12}
+    - {town: Town10HD, weather: cloudy_noon, gnss: canyon, seed: 24, minutes: 12}
+    - {town: Town10HD, weather: wet_noon,    gnss: canyon, seed: 25, minutes: 12, traffic: 60}
+    - {town: Town05,   weather: clear_noon,  gnss: canyon, seed: 26, minutes: 12}
+    - {town: Town07,   weather: clear_noon,  gnss: nominal, seed: 27, minutes: 12}
+
+  3_test_unseen_town:          # unseen towns + unseen weather (10 min -> more attack episodes / tighter CIs)
+    - {town: Town02, weather: hard_rain_noon, gnss: nominal, seed: 11, minutes: 10}
+    - {town: Town02, weather: hard_rain_noon, gnss: nominal, seed: 12, minutes: 10}
+    - {town: Town02, weather: clear_night,    gnss: nominal, seed: 13, minutes: 10}
+    - {town: Town04, weather: hard_rain_noon, gnss: nominal, seed: 11, minutes: 10}
+    - {town: Town04, weather: clear_noon,     gnss: nominal, seed: 12, minutes: 10}
+    - {town: Town04, weather: clear_night,    gnss: nominal, seed: 43, minutes: 10}   # seed 13 gave KISS-ICP 12% path-len err on featureless night highway; reseeded
+    - {town: Town06, weather: hard_rain_noon, gnss: nominal, seed: 11, minutes: 10}
+    - {town: Town06, weather: clear_noon,     gnss: nominal, seed: 12, minutes: 10}
+    - {town: Town07, weather: clear_noon,     gnss: nominal, seed: 11, minutes: 10}
+    - {town: Town07, weather: hard_rain_noon, gnss: nominal, seed: 12, minutes: 10}
+    - {town: Town07, weather: clear_night,    gnss: nominal, seed: 13, minutes: 10}
+    - {town: Town10HD, weather: hard_rain_noon, gnss: canyon, seed: 14, minutes: 10}   # seen town, unseen wx
+
+  4_stress:                    # dynamics / occlusion / detectability-limit edges + long-horizon
+    - {town: Town04, weather: clear_noon,  gnss: nominal, seed: 30, ego_fast: true}   # highway high-speed
+    - {town: Town06, weather: clear_noon,  gnss: nominal, seed: 31, ego_fast: true}
+    - {town: Town03, weather: hard_rain_noon, gnss: canyon, seed: 32, traffic: 75}   # heavy + rain
+    - {town: Town10HD, weather: hard_rain_noon, gnss: canyon, seed: 33, traffic: 75}
+    - {town: Town10HD, weather: clear_night, gnss: nominal, seed: 34, camera: true}
+    - {town: Town03, weather: clear_noon, gnss: nominal, seed: 35}     # -> extreme-slow attack sweep in make_dataset
+    - {town: Town05, weather: clear_noon, gnss: nominal, seed: 36}     # -> extreme-slow attack sweep
+    - {town: Town04, weather: clear_noon, gnss: nominal, seed: 37, ego_fast: true}
+    # long-horizon: LiDAR-odom drift accumulation + multiple attacks per continuous drive + long clean baselines
+    - {town: Town05,   weather: clear_noon, gnss: nominal, seed: 40, minutes: 20}
+    - {town: Town04,   weather: clear_noon, gnss: nominal, seed: 41, minutes: 20, ego_fast: true}
+    - {town: Town05,   weather: clear_noon, gnss: canyon,  seed: 52, minutes: 20}   # was Town03 canyon (seeds 42 & 52 both ego-gridlocked on tight canyon streets for the full 20min); moved long-horizon canyon slot to Town05, which handled canyon fine in waves 1b/2
+
+  5_camera_validation:         # front camera on; for sim-to-real + qualitative figures
+    - {town: Town03,   weather: clear_noon, gnss: nominal, seed: 50, camera: true}
+    - {town: Town10HD, weather: clear_noon, gnss: canyon,  seed: 51, camera: true}
+    - {town: Town04,   weather: clear_noon, gnss: nominal, seed: 52, camera: true}
+    - {town: Town07,   weather: clear_night, gnss: nominal, seed: 53, camera: true}
+
+# ---------------------------------------------------------------------------------------
+# budget / expectations
+# ---------------------------------------------------------------------------------------
+budget:
+  total_sessions: 57
+  sim_minutes: 560
+  wall_hours_est: 30           # ~0.42x realtime + odometry + per-wave overhead
+  gpu_cost_usd_est: 40        # NC16as_T4_v3 on-demand ~1.30 $/h incl. disk + IP
+  keep_clouds_waves: [0_pilot]  # raw clouds kept only for the pilot QA sessions
+  final_dataset_gb_est: 20    # parquet + poses + pilot clouds + wave-5 camera
+
+# ---------------------------------------------------------------------------------------
+# QA gates -- a wave is not "done" (VM not deallocated) until every session passes
+# ---------------------------------------------------------------------------------------
+qa_gates:
+  sensor_rate_hz:   {imu: [98, 102], gnss: [9.5, 10.5], lidar: [9.5, 10.5]}
+  gnss_vs_gt_median_m: {nominal: [0.0, 0.7], canyon: [1.0, 4.5], tunnel: [1.0, 6.0]}
+  lidar_odom_drift_pct_max: 3.0
+  lidar_odom_pathlen_rel_err_max: 0.05
+  junction_events_per_8min: [2, 70]   # a fast survey drive legitimately passes many
+  stationary_fraction_max: 0.40       # dense downtown reality; old dataset was 58%
+  rule: "no manifest.json => session invalid => re-run"
